@@ -20,12 +20,15 @@ public class Config {
 	@Expose(serialize = false , deserialize = false)
 	private static Gson gson;
 	
+	// Root upload/download directory
+	public String root_dir;
 	public String region;
 	public String vault;
 	public String access_key;
 	public String secret_key;
 	public String sns_topic_arn;
 	public long polling_milliseconds;
+	public String retrieval_tier;
 	
 	private Config(Path configPath) {}
 	
