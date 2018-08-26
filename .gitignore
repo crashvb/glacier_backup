@@ -2,3 +2,6 @@
 /.project
 /.classpath
 /config.cfg
+*.log
+*.lck
+test
