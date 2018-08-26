@@ -5,7 +5,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Set;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -27,8 +26,12 @@ public class Config {
 	public String access_key;
 	public String secret_key;
 	public String sns_topic_arn;
-	public long polling_milliseconds;
+	public long   polling_milliseconds;
 	public String retrieval_tier;
+    public String log_name;
+	public String log_level;
+	public int    log_files;
+	public int    log_size;
 	
 	private Config(Path configPath) {}
 	

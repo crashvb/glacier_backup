@@ -10,7 +10,7 @@ import java.util.logging.Formatter;
 import java.util.logging.LogRecord;
 
 
-public class ServerLogFormatter extends Formatter {
+public class LogFormatter extends Formatter {
 	
     private static final DateTimeFormatter timestampFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
     

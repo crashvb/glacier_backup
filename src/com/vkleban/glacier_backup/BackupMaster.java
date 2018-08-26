@@ -1,18 +1,23 @@
 package com.vkleban.glacier_backup;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.ConsoleHandler;
+import java.util.logging.FileHandler;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogManager;
+import java.util.logging.Logger;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.AmazonServiceException;
@@ -41,6 +46,8 @@ import com.vkleban.glacier_backup.config.Config;
 
 public class BackupMaster {
 
+    private static Logger log= Logger.getLogger(BackupMaster.class.getName());
+    
     private final Config c_;
 
     private AmazonGlacier          amazonGlacier_;
@@ -101,6 +108,7 @@ public class BackupMaster {
      * @param name      - File name to be given to the downloaded archive
      */
     public void download(String archiveID, String name) {
+        log.info("Attempting to download \"" + archiveID + " as a file named \"" + name + "\"");
         archiveTransferManager_.download(c_.vault, archiveID, Paths.get(c_.root_dir, name).toFile());
     }
     
@@ -112,6 +120,7 @@ public class BackupMaster {
                         .withType("inventory-retrieval")
                         .withSNSTopic(c_.sns_topic_arn)
                         );
+        log.finer("Initiating list job \"" + initJobRequest + "\"");
         InitiateJobResult initJobResult = amazonGlacier_.initiateJob(initJobRequest);
         return initJobResult.getJobId();
     }
@@ -122,7 +131,7 @@ public class BackupMaster {
                 .withJobId(jobId);
              !amazonGlacier_.describeJob(describeJobRequest).isCompleted();)
         {
-            System.out.println("Job \""
+            log.finest("Job \""
                     + jobId
                     + "\" hasn't been completed yet. Trying again in "
                     + c_.polling_milliseconds
@@ -138,8 +147,9 @@ public class BackupMaster {
         GetJobOutputRequest getJobOutputRequest = new GetJobOutputRequest()
             .withVaultName(c_.vault)
             .withJobId(jobId);
+        log.finer("Initiating job request \"" + getJobOutputRequest + "\"");
         GetJobOutputResult getJobOutputResult = amazonGlacier_.getJobOutput(getJobOutputRequest);
-          
+        
         String inputLine;
         try (BufferedReader in=
                 new BufferedReader(
@@ -162,6 +172,7 @@ public class BackupMaster {
      */
     public static String beautifyJson(String jsonString) 
     {
+        log.finest("JSON before beautification \"" + jsonString + "\"");
         JsonParser parser = new JsonParser();
         Gson gson = new GsonBuilder().setPrettyPrinting().create();
         return gson.toJson(parser.parse(jsonString).getAsJsonObject());
@@ -173,9 +184,9 @@ public class BackupMaster {
      */
     public String getListing() throws IOException {
         String jobId = initiateListJob();
-        System.out.println("List job successfully initiated");
+        log.info("List job successfully initiated. About 4 hours is required for completion");
         waitForJobCompletion(jobId);
-        System.out.println("Job \"" + jobId + "\" has been completed. Downloading...");
+        log.fine("Job \"" + jobId + "\" has been completed. Downloading...");
         return downloadJsonJobOutput(jobId);
     }
     
@@ -184,7 +195,7 @@ public class BackupMaster {
      * @throws IOException
      */
     public void list() throws IOException {    
-        System.out.println("Listing contents:\n" + beautifyJson(getListing()));
+        log.info("Listing contents:\n" + beautifyJson(getListing()));
     }
     
     public void test() {
@@ -221,6 +232,31 @@ public class BackupMaster {
         }
         System.exit(0);
     }
+    
+    private static void initLogger() throws SecurityException, IOException {
+        // Close root logger handlers
+        for (Handler h: Logger.getLogger("").getHandlers())
+            h.close();
+        // Close the rest of the handlers
+        LogManager.getLogManager().reset();
+        Logger myLogger= Logger.getLogger("com.vkleban");
+        Config c= Config.get();
+        Level logLevel= Level.parse(c.log_level);
+        myLogger.setLevel(Level.parse(String.valueOf(Math.min(logLevel.intValue(), Level.INFO.intValue()))));
+        Handler fh= new FileHandler(c.log_name, c.log_size, c.log_size);
+        fh.setFormatter(new LogFormatter());
+        fh.setLevel(logLevel);
+        myLogger.addHandler(fh);
+        Handler ch= new ConsoleHandler() {
+            @Override
+            protected synchronized void setOutputStream(OutputStream out) throws SecurityException {
+                super.setOutputStream(System.out);
+            }
+        };
+        ch.setFormatter(new ConsoleFormatter());
+        ch.setLevel(Level.INFO);
+        myLogger.addHandler(ch);
+    }
 
     private static String usage() {
         return "Usage:\n"
@@ -243,8 +279,9 @@ public class BackupMaster {
                 return;
             }
             Config.init(Paths.get(opts.get("c")));
+            initLogger();
             BackupMaster bm= new BackupMaster();
-            bm.test();
+//            bm.test();
             String arg;
             if ((arg = opts.get("u")) != null) {
                 bm.upload(arg);
@@ -260,6 +297,8 @@ public class BackupMaster {
             System.err.println("Failed initializing:\n" + e);
         } catch (IOException e) {
             System.err.println("Failed file operation:\n" + e);
+        } catch (Exception e) {
+            System.err.println("General error:\n" + e);
         }
     }
 }

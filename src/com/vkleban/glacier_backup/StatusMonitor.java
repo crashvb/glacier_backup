@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Logger;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.auth.policy.Policy;
@@ -32,6 +33,8 @@ import com.vkleban.glacier_backup.config.Config;
 
 public class StatusMonitor implements AutoCloseable {
     
+    private Logger log= Logger.getLogger(this.getClass().getName());
+    
     private static final ObjectMapper MAPPER = new ObjectMapper();
     
     private final Config c_= Config.get();
@@ -44,6 +47,7 @@ public class StatusMonitor implements AutoCloseable {
         amazonSQS_= amazonSQS;
         String randomSeed = UUID.randomUUID().toString();
         String queueName = "glacier-archive-transfer-" + randomSeed;
+        log.fine("Generated SQS queue name \"" + queueName + "\"");
 
         queueUrl = amazonSQS.createQueue(new CreateQueueRequest(queueName)).getQueueUrl();
         String queueARN = amazonSQS
@@ -52,6 +56,8 @@ public class StatusMonitor implements AutoCloseable {
                         .withAttributeNames("QueueArn"))
                         .getAttributes()
                         .get("QueueArn");
+        
+        log.finer("Received SQS queue name ARN \"" + queueARN + "\"");
 
         Policy sqsPolicy =
             new Policy().withStatements(
@@ -60,6 +66,7 @@ public class StatusMonitor implements AutoCloseable {
                     .withActions(SQSActions.SendMessage)
                     .withResources(new Resource(queueARN))
                     .withConditions(ConditionFactory.newSourceArnCondition(c_.sns_topic_arn)));
+        log.finest("SQS policy: " + BackupMaster.beautifyJson(sqsPolicy.toJson()));
         amazonSQS.setQueueAttributes(
                 new SetQueueAttributesRequest(
                         queueUrl,
@@ -93,6 +100,7 @@ public class StatusMonitor implements AutoCloseable {
                 if (!messageBody.startsWith("{")) {
                     messageBody = new String(BinaryUtils.fromBase64(messageBody));
                 }
+                log.finer("Received message from SQS:\n" + BackupMaster.beautifyJson(messageBody));
 
                 try {
                     JsonNode json = MAPPER.readTree(messageBody);
@@ -102,13 +110,19 @@ public class StatusMonitor implements AutoCloseable {
                     json = MAPPER.readTree(jsonMessage);
                     String messageJobId = json.get("JobId").asText();
                     String messageStatus = json.get("StatusMessage").asText();
+                    
+                    log.fine("Received job \"" + messageJobId + "\" with status \"" + messageStatus + "\"");
 
                     // Don't process this message if it wasn't the job we were looking for
                     if (!jobs.contains(messageJobId)) continue;
                     
                     jobs.remove(messageJobId);
                     try {
-                        if (StatusCode.Succeeded.toString().equals(messageStatus)) return messageJobId;
+                        if (StatusCode.Succeeded.toString().equals(messageStatus)) 
+                        {
+                            log.fine("Notifying requestor of job \"" + messageJobId + "\"");
+                            return messageJobId;
+                        }
                         if (StatusCode.Failed.toString().equals(messageStatus)) {
                             throw new AmazonClientException("Archive retrieval failed");
                         }
@@ -128,12 +142,14 @@ public class StatusMonitor implements AutoCloseable {
     
     private void deleteMessage(Message message) {
         try {
+            log.fine("Removing message \"" + message.getReceiptHandle() + "\" from SQS queue \"" + queueUrl + "\"");
             amazonSQS_.deleteMessage(new DeleteMessageRequest(queueUrl, message.getReceiptHandle()));
         } catch (Exception e) {}
     }
 
     @Override
     public void close() {
+        log.fine("Removing SQS queue \"" + queueUrl + "\"");
         amazonSQS_.deleteQueue(new DeleteQueueRequest(queueUrl));
     }
     
