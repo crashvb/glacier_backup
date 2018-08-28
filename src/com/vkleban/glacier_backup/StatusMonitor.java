@@ -1,7 +1,7 @@
 package com.vkleban.glacier_backup;
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.List;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -42,7 +42,26 @@ public class StatusMonitor implements AutoCloseable {
     private final String queueUrl;
     
     private final AmazonSQS amazonSQS_;
+    
+    private Iterator<Message> messageIterator_= new Iterator<Message>() {
 
+        @Override
+        public boolean hasNext() {
+            return false;
+        }
+
+        @Override
+        public Message next() {
+            return null;
+        }
+    };
+
+    /**
+     * Create an SQS queue and attach it to configured SNS
+     * 
+     * @param amazonSQS - Amazon SQS object
+     * @param amazonSNS - Amazon SNS object
+     */
     public StatusMonitor(AmazonSQS amazonSQS, AmazonSNS amazonSNS) {
         amazonSQS_= amazonSQS;
         String randomSeed = UUID.randomUUID().toString();
@@ -75,6 +94,12 @@ public class StatusMonitor implements AutoCloseable {
         amazonSNS.subscribe(new SubscribeRequest(c_.sns_topic_arn, "sqs", queueARN));
     }
     
+    /**
+     * Turn array of strings into HashMap. This ugliness came from Amazon Glacier source code
+     * 
+     * @param keyValuePairs - given array of strings
+     * @return map of odd strings to subsequent even strings
+     */
     private Map<String, String> newAttributes(String... keyValuePairs) {
         if (keyValuePairs.length % 2 != 0)
             throw new IllegalArgumentException(
@@ -88,55 +113,69 @@ public class StatusMonitor implements AutoCloseable {
         }
 
         return map;
+    }    
+    
+    /**
+     * @return message from the SQS queue
+     */
+    private Message getMessage() {
+        while (!messageIterator_.hasNext()) {
+            messageIterator_ = amazonSQS_.receiveMessage(new ReceiveMessageRequest(queueUrl)).getMessages().iterator();
+            if (!messageIterator_.hasNext())
+                try {
+                    Thread.sleep(c_.polling_milliseconds);
+                } catch (InterruptedException e) {/* Ignore */ }
+        }
+        return messageIterator_.next();
     }
     
+    /**
+     * Given set of jobs, wait for any one of them to complete, then return the ID of the completed one
+     * 
+     * @param jobs
+     * @return
+     * @throws IllegalArgumentException
+     */
     public String waitForJobToComplete(Set<String> jobs) throws IllegalArgumentException {
         if (jobs.size() == 0)
             throw new IllegalArgumentException("Cannot supply empty job set. Please fix your code");
         while (true) {
-            List<Message> messages = amazonSQS_.receiveMessage(new ReceiveMessageRequest(queueUrl)).getMessages();
-            for (Message message : messages) {
-                String messageBody = message.getBody();
-                if (!messageBody.startsWith("{")) {
-                    messageBody = new String(BinaryUtils.fromBase64(messageBody));
-                }
-                log.finer("Received message from SQS:\n" + BackupMaster.beautifyJson(messageBody));
-
-                try {
-                    JsonNode json = MAPPER.readTree(messageBody);
-
-                    String jsonMessage = json.get("Message").asText().replace("\\\"", "\"");
-
-                    json = MAPPER.readTree(jsonMessage);
-                    String messageJobId = json.get("JobId").asText();
-                    String messageStatus = json.get("StatusMessage").asText();
-                    
-                    log.fine("Received job \"" + messageJobId + "\" with status \"" + messageStatus + "\"");
-
-                    // Don't process this message if it wasn't the job we were looking for
-                    if (!jobs.contains(messageJobId)) continue;
-                    
-                    jobs.remove(messageJobId);
-                    try {
-                        if (StatusCode.Succeeded.toString().equals(messageStatus)) 
-                        {
-                            log.fine("Notifying requestor of job \"" + messageJobId + "\"");
-                            return messageJobId;
-                        }
-                        if (StatusCode.Failed.toString().equals(messageStatus)) {
-                            throw new AmazonClientException("Archive retrieval failed");
-                        }
-                    } finally {
-                        deleteMessage(message);
-                    }
-                } catch (IOException e) {
-                    throw new AmazonClientException("Unable to parse status message: " + messageBody, e);
-                }
+            Message message= getMessage();
+            String messageBody = message.getBody();
+            if (!messageBody.startsWith("{")) {
+                messageBody = new String(BinaryUtils.fromBase64(messageBody));
             }
+            log.finer("Received message from SQS:\n" + BackupMaster.beautifyJson(messageBody));
 
             try {
-                Thread.sleep(c_.polling_milliseconds);
-            } catch (InterruptedException e) {/* Ignore */ }
+                JsonNode json = MAPPER.readTree(messageBody);
+
+                String jsonMessage = json.get("Message").asText().replace("\\\"", "\"");
+
+                json = MAPPER.readTree(jsonMessage);
+                String messageJobId = json.get("JobId").asText();
+                String messageStatus = json.get("StatusMessage").asText();
+
+                log.fine("Received job \"" + messageJobId + "\" with status \"" + messageStatus + "\"");
+
+                // Don't process this message if it wasn't the job we were looking for
+                if (!jobs.contains(messageJobId)) continue;
+
+                try {
+                    if (StatusCode.Succeeded.toString().equals(messageStatus)) 
+                    {
+                        log.fine("Notifying requestor of job \"" + messageJobId + "\"");
+                        return messageJobId;
+                    }
+                    if (StatusCode.Failed.toString().equals(messageStatus)) {
+                        throw new AmazonClientException("Archive retrieval failed");
+                    }
+                } finally {
+                    deleteMessage(message);
+                }
+            } catch (IOException e) {
+                throw new AmazonClientException("Unable to parse status message: " + messageBody, e);
+            }
         }
     }
     
