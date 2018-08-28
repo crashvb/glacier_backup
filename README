@@ -1,0 +1,15 @@
+To build this, you first need to build my ArgumentParser first. The configuration example is below:
+{
+  "root_dir" : "/home/vova/workspace/glacier_backup/test",
+	"region" : "us-east-2", 
+	"vault" : "vkleban",
+	"access_key" : "generate yours here https://console.aws.amazon.com/iam/home?#/security_credential",
+	"secret_key" : "secret",
+	"sns_topic_arn" : "Enable yours when configuring your vault and give it both permissions",
+	"retrieval_tier" : "Standard",
+	"polling_milliseconds" : "30000",
+	"log_name" : "glacier_backup_%g.log",
+	"log_level" : "FINER",
+	"log_files" : 2,
+	"log_size" : 10485760
+}
