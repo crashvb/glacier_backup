@@ -30,6 +30,7 @@ import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.services.glacier.AmazonGlacier;
 import com.amazonaws.services.glacier.AmazonGlacierClientBuilder;
+import com.amazonaws.services.glacier.model.DeleteArchiveRequest;
 import com.amazonaws.services.glacier.model.DescribeJobRequest;
 import com.amazonaws.services.glacier.model.GetJobOutputRequest;
 import com.amazonaws.services.glacier.model.GetJobOutputResult;
@@ -274,7 +275,7 @@ public class BackupMaster {
     
     /**
      * Download archives by Java glob. This operation first uses inventory to get listing, which takes about 4 hours.
-     * Then the downloads will depend on configured 
+     * Then the download times will depend on configured tier
      * 
      * @param glob - Java glob
      * @throws IOException
@@ -303,6 +304,59 @@ public class BackupMaster {
     public void downloadByListing(Path inventory) throws IOException {
         log.info("Attempting to download files from given inventory \"" + inventory + "\"");
         downloadList(parseInventoryJSONToArchiveFileMap(
+                new String(Files.readAllBytes(inventory),
+                StandardCharsets.UTF_8)));
+    }
+    
+    /**
+     * Remove list of files by given archive IDs into given file names
+     * 
+     * @param archiveNameMap - map of archive IDs to file names
+     */
+    public void removeList(Map<String, String> archiveNameMap) {
+        for (Map.Entry<String, String> archive : archiveNameMap.entrySet())
+        {
+            log.info("Removing archive \"" + archive.getValue() + "\" with archive ID \"" + archive.getKey() + "\"");
+            DeleteArchiveRequest request = new DeleteArchiveRequest()
+                    .withVaultName(c_.vault)
+                    .withArchiveId(archive.getKey());
+
+            amazonGlacier_.deleteArchive(request);
+        }
+    }
+    
+    /**
+     * Remove archives by Java glob. This operation first uses inventory to get listing, which takes about 4 hours.
+     * 
+     * @param glob - Java glob
+     * @throws IOException
+     */
+    public void removeByGlob(String glob) throws IOException {
+        log.warning("Attempting to remove files by glob \"" + glob + "\". Is this what you really want?\n"
+                  + "I suggest deletion of files by the inventory instead to stay on the safer side.\n"
+                  + "You still have few hours to change your mind");
+        PathMatcher matcher= FileSystems.getDefault()
+                .getPathMatcher("glob:" + glob);
+        HashMap<String, String> filteredList= new HashMap<>();
+        for (Map.Entry<String, String> entry : parseInventoryJSONToArchiveFileMap(getListing()).entrySet()) {
+            if (matcher.matches(Paths.get(entry.getValue()))) {
+                log.info("File \"" + entry.getValue() + "\" matched pattern \"" + glob + "\"");
+                filteredList.put(entry.getKey(), entry.getValue());
+            }
+        }
+        removeList(filteredList);
+    }
+    
+    /**
+     * Download particular archive by its ID into a file with a given name in a root dir
+     * 
+     * @param archiveID - Amazon Glacier archive ID (list operation will give you the IDs)
+     * @param name      - File name to be given to the downloaded archive
+     * @throws IOException when failed reading given inventory
+     */
+    public void removeByListing(Path inventory) throws IOException {
+        log.info("Attempting to remove files by given inventory \"" + inventory + "\"");
+        removeList(parseInventoryJSONToArchiveFileMap(
                 new String(Files.readAllBytes(inventory),
                 StandardCharsets.UTF_8)));
     }
@@ -359,7 +413,7 @@ public class BackupMaster {
 
     private static String usage() {
         return "Usage:\n"
-                + "java -jar glacier_backup.jar {h|c:{u|l|d{g:|n:}}}\n"
+                + "java -jar glacier_backup.jar {h|c:{u|l|d{g:|n:}|r{g:|n:}}}\n"
                 + "where:\n"
                 + "-h   usage\n"
                 + "-c   configuration file\n"
@@ -368,7 +422,11 @@ public class BackupMaster {
                 + "Download files by glob:\n"
                 + "            java -jar glacier_backup.jar -c <config file> -d -g <Java style file glob>\n"
                 + "Download files by inventory:\n"
-                + "            java -jar glacier_backup.jar -c <config file> -d -n <File with inventory style JSON>\n";
+                + "            java -jar glacier_backup.jar -c <config file> -d -n <File with inventory style JSON>\n"
+                + "Remove files by glob:\n"
+                + "            java -jar glacier_backup.jar -c <config file> -r -g <Java style file glob>\n"
+                + "Remove files by inventory:\n"
+                + "            java -jar glacier_backup.jar -c <config file> -r -n <File with inventory style JSON>\n";
     }
     
     public static String getTestListing() {
@@ -400,11 +458,36 @@ public class BackupMaster {
                 "  ]\n" + 
                 "}";
     }
+    
+    public static String testSQSData() {
+        return "{\n" + 
+                "  \"Type\": \"Notification\",\n" + 
+                "  \"MessageId\": \"8489b5a5-fb36-5f7f-9080-e65adb441408\",\n" + 
+                "  \"TopicArn\": \"arn:aws:sns:us-east-2:446183465487:retrieval\",\n" + 
+                "  \"Message\": \"{\\\"Action\\\":\\\"ArchiveRetrieval\\\",\\\"ArchiveId\\\":\\\"mGW5ossJiOI8lQUFqXeaejxnT0PUsd_0WDO96ySNm_sVQ_GpjcYbVXShY-RP-Y-ENuxV8iz9jH00n7ay0OKDr6VlhP97ExrwY8DcO_UWqwkIXAhqVJZV9z12dyfnJi6a5jtjJ5Gm3Q\\\",\\\"ArchiveSHA256TreeHash\\\":\\\"8810b1412025d931407f4debd89f5a11fd62db7ca9101040c0de336e3a453e23\\\",\\\"ArchiveSizeInBytes\\\":2097152,\\\"Completed\\\":true,\\\"CompletionDate\\\":\\\"2018-08-28T10:04:33.978Z\\\",\\\"CreationDate\\\":\\\"2018-08-28T06:20:32.385Z\\\",\\\"InventoryRetrievalParameters\\\":null,\\\"InventorySizeInBytes\\\":null,\\\"JobDescription\\\":null,\\\"JobId\\\":\\\"fdjyolMiFRh5e3GiRuji6jqbbQMIqEKDTb_sv2B3Vu8p8Mzw8iIQAuYANkVgNNusduvYWJWWBaUl3f-3pc-B9MImhCJe\\\",\\\"RetrievalByteRange\\\":\\\"0-2097151\\\",\\\"SHA256TreeHash\\\":\\\"8810b1412025d931407f4debd89f5a11fd62db7ca9101040c0de336e3a453e23\\\",\\\"SNSTopic\\\":\\\"arn:aws:sns:us-east-2:446183465487:retrieval\\\",\\\"StatusCode\\\":\\\"Succeeded\\\",\\\"StatusMessage\\\":\\\"Succeeded\\\",\\\"Tier\\\":\\\"Standard\\\",\\\"VaultARN\\\":\\\"arn:aws:glacier:us-east-2:446183465487:vaults/vkleban\\\"}\",\n" + 
+                "  \"Timestamp\": \"2018-08-28T10:04:34.054Z\",\n" + 
+                "  \"SignatureVersion\": \"1\",\n" + 
+                "  \"Signature\": \"RRfuT4NvfwOzQKuFXmciNrpYTVpgVnSHNI+vMMIbmiVAVAnRuK9mv75mnaGZ5HNlzAQMjvo5MVNwXQ1JJi+fjobSconffrlUs5lm44DWvBVOKbS4IL8PUIIlSIX7TS9xK4txtzhFxSJnsuYkM0+NrM3WrwA2OT1tlOmZmFk1rR1vtREZTSSZ44ZVxFzuScPR4HAeKn9QoENd1mtO+ijUyyt+y2DCjO1izO3cS6ZzsyRd68S1JvCWbwjwTrJ3QXkT7u/FPHDzmz0NRabGCLHm17rYNjLZuXxtSNQdQCiQj55qxtuolo1lXkmxBEnWyCefCUZefONk3Y38cl7RZ73WPg\\u003d\\u003d\",\n" + 
+                "  \"SigningCertURL\": \"https://sns.us-east-2.amazonaws.com/SimpleNotificationService-ac565b8b1a6c5d002d285f9598aa1d9b.pem\",\n" + 
+                "  \"UnsubscribeURL\": \"https://sns.us-east-2.amazonaws.com/?Action\\u003dUnsubscribe\\u0026SubscriptionArn\\u003darn:aws:sns:us-east-2:446183465487:retrieval:640d8165-3947-452a-88d6-79ebbcc78292\"\n" + 
+                "}";
+    }
 
+    public static void testSQSGsonParsing() {
+        JsonParser parser_= new JsonParser();
+        JsonObject parsedMessageBody= parser_.parse(testSQSData()).getAsJsonObject();
+        String jsonMessage = parsedMessageBody.get("Message").getAsString().replace("\\\"", "\"");
+        JsonObject parsedBody = parser_.parse(jsonMessage).getAsJsonObject();
+        String messageJobId = parsedBody.get("JobId").getAsString();
+        String messageStatus = parsedBody.get("StatusMessage").getAsString();
+        System.out.println("Job ID \"" + messageJobId + "\"");
+        System.out.println("Status \"" + messageStatus + "\"");
+        System.exit(0);
+    }
     
     public static void main(String[] args) throws AmazonServiceException, AmazonClientException {
         try {
-            ArgumentParser optParser = new ArgumentParser("{h|c:{u|l|d{g:|n:}}}");
+            ArgumentParser optParser = new ArgumentParser("{h|c:{u|l|d{g:|n:}|r{g:|n:}}}");
             Map<String, String> opts = optParser.parseArguments(args);
             if (opts.containsKey("h")) {
                 System.out.println(usage());
@@ -413,7 +496,7 @@ public class BackupMaster {
             Config.init(Paths.get(opts.get("c")));
             initLogger();
             BackupMaster bm= new BackupMaster();
-//            bm.testGlobFinding();
+//            testSQSGsonParsing();
             if (opts.containsKey("u")) {
                 bm.upload();
             } else if (opts.containsKey("d")) {
@@ -422,6 +505,13 @@ public class BackupMaster {
                     bm.downloadByGlob(parameter);
                 } else {
                     bm.downloadByListing(Paths.get(opts.get("n")));
+                }
+            } else if (opts.containsKey("r")) {
+                String parameter;
+                if ((parameter = opts.get("g")) != null) {
+                    bm.removeByGlob(parameter);
+                } else {
+                    bm.removeByListing(Paths.get(opts.get("n")));
                 }
             } else if (opts.containsKey("l")) {
                 bm.list();

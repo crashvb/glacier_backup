@@ -1,5 +1,4 @@
 package com.vkleban.glacier_backup;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -27,19 +26,19 @@ import com.amazonaws.services.sqs.model.Message;
 import com.amazonaws.services.sqs.model.ReceiveMessageRequest;
 import com.amazonaws.services.sqs.model.SetQueueAttributesRequest;
 import com.amazonaws.util.BinaryUtils;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.vkleban.glacier_backup.config.Config;
 
 public class StatusMonitor implements AutoCloseable {
     
-    private Logger log= Logger.getLogger(this.getClass().getName());
+    private static Logger log= Logger.getLogger(StatusMonitor.class.getName());
     
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static JsonParser parser_ = new JsonParser();
     
     private final Config c_= Config.get();
     
-    private final String queueUrl;
+    private final String queueUrl_;
     
     private final AmazonSQS amazonSQS_;
     
@@ -68,10 +67,10 @@ public class StatusMonitor implements AutoCloseable {
         String queueName = "glacier-archive-transfer-" + randomSeed;
         log.fine("Generated SQS queue name \"" + queueName + "\"");
 
-        queueUrl = amazonSQS.createQueue(new CreateQueueRequest(queueName)).getQueueUrl();
+        queueUrl_ = amazonSQS.createQueue(new CreateQueueRequest(queueName)).getQueueUrl();
         String queueARN = amazonSQS
                 .getQueueAttributes(
-                        new GetQueueAttributesRequest(queueUrl)
+                        new GetQueueAttributesRequest(queueUrl_)
                         .withAttributeNames("QueueArn"))
                         .getAttributes()
                         .get("QueueArn");
@@ -88,7 +87,7 @@ public class StatusMonitor implements AutoCloseable {
         log.finest("SQS policy: " + BackupMaster.beautifyJson(sqsPolicy.toJson()));
         amazonSQS.setQueueAttributes(
                 new SetQueueAttributesRequest(
-                        queueUrl,
+                        queueUrl_,
                         newAttributes("Policy", sqsPolicy.toJson())));
 
         amazonSNS.subscribe(new SubscribeRequest(c_.sns_topic_arn, "sqs", queueARN));
@@ -120,7 +119,7 @@ public class StatusMonitor implements AutoCloseable {
      */
     private Message getMessage() {
         while (!messageIterator_.hasNext()) {
-            messageIterator_ = amazonSQS_.receiveMessage(new ReceiveMessageRequest(queueUrl)).getMessages().iterator();
+            messageIterator_ = amazonSQS_.receiveMessage(new ReceiveMessageRequest(queueUrl_)).getMessages().iterator();
             if (!messageIterator_.hasNext())
                 try {
                     Thread.sleep(c_.polling_milliseconds);
@@ -148,13 +147,11 @@ public class StatusMonitor implements AutoCloseable {
             log.finer("Received message from SQS:\n" + BackupMaster.beautifyJson(messageBody));
 
             try {
-                JsonNode json = MAPPER.readTree(messageBody);
-
-                String jsonMessage = json.get("Message").asText().replace("\\\"", "\"");
-
-                json = MAPPER.readTree(jsonMessage);
-                String messageJobId = json.get("JobId").asText();
-                String messageStatus = json.get("StatusMessage").asText();
+                JsonObject parsedMessageBody= parser_.parse(messageBody).getAsJsonObject();
+                String jsonMessage = parsedMessageBody.get("Message").getAsString().replace("\\\"", "\"");
+                JsonObject parsedBody = parser_.parse(jsonMessage).getAsJsonObject();
+                String messageJobId = parsedBody.get("JobId").getAsString();
+                String messageStatus = parsedBody.get("StatusMessage").getAsString();
 
                 log.fine("Received job \"" + messageJobId + "\" with status \"" + messageStatus + "\"");
 
@@ -173,7 +170,7 @@ public class StatusMonitor implements AutoCloseable {
                 } finally {
                     deleteMessage(message);
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
                 throw new AmazonClientException("Unable to parse status message: " + messageBody, e);
             }
         }
@@ -181,15 +178,15 @@ public class StatusMonitor implements AutoCloseable {
     
     private void deleteMessage(Message message) {
         try {
-            log.fine("Removing message \"" + message.getReceiptHandle() + "\" from SQS queue \"" + queueUrl + "\"");
-            amazonSQS_.deleteMessage(new DeleteMessageRequest(queueUrl, message.getReceiptHandle()));
+            log.fine("Removing message \"" + message.getReceiptHandle() + "\" from SQS queue \"" + queueUrl_ + "\"");
+            amazonSQS_.deleteMessage(new DeleteMessageRequest(queueUrl_, message.getReceiptHandle()));
         } catch (Exception e) {}
     }
 
     @Override
     public void close() {
-        log.fine("Removing SQS queue \"" + queueUrl + "\"");
-        amazonSQS_.deleteQueue(new DeleteQueueRequest(queueUrl));
+        log.fine("Removing SQS queue \"" + queueUrl_ + "\"");
+        amazonSQS_.deleteQueue(new DeleteQueueRequest(queueUrl_));
     }
     
 }
