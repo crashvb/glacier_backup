@@ -1,6 +1,7 @@
 package com.vkleban.glacier_backup;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -227,11 +228,25 @@ public class BackupMaster {
     }
     
     /**
+     * Make sure there is a directory for this file to be written to
+     * 
+     * @param file - the file to prepare for
+     * @throws IOException when we fail to ensure such directory exists for any reason
+     */
+    private void ensureParentDirectory(File file) throws IOException {
+        File parentFile= file.getParentFile();
+        if (parentFile == null)
+            return;
+        Files.createDirectories(parentFile.toPath());
+    }
+    
+    /**
      * Download list of files by given archive IDs into given file names
      * 
      * @param archiveNameMap - map of archive IDs to file names
+     * @throws IOException when file operation errors happen
      */
-    public void downloadList(Map<String, String> archiveNameMap) {
+    public void downloadList(Map<String, String> archiveNameMap) throws IOException {
         Map<String, String> jobArchiveMap= new HashMap<>();
         log.info("Creating file download jobs");
         for (String archiveID: archiveNameMap.keySet()) {
@@ -263,12 +278,14 @@ public class BackupMaster {
                        + "\" using job \""
                        + job
                        + "\"");
+                File downloadedFile= Paths.get(c_.root_dir, fileName).toFile();
+                ensureParentDirectory(downloadedFile);
                 archiveTransferManager_
                     .downloadJobOutput(
                             null,
                             c_.vault,
                             job,
-                            Paths.get(c_.root_dir, fileName).toFile());
+                            downloadedFile);
             }
         }
     }
@@ -285,7 +302,9 @@ public class BackupMaster {
         PathMatcher matcher= FileSystems.getDefault()
                 .getPathMatcher("glob:" + glob);
         HashMap<String, String> filteredList= new HashMap<>();
-        for (Map.Entry<String, String> entry : parseInventoryJSONToArchiveFileMap(getListing()).entrySet()) {
+        String inventory= getListing();
+        log.finer("Received inventory:\n" + beautifyJson(inventory));
+        for (Map.Entry<String, String> entry : parseInventoryJSONToArchiveFileMap(inventory).entrySet()) {
             if (matcher.matches(Paths.get(entry.getValue()))) {
                 log.info("File \"" + entry.getValue() + "\" matched pattern \"" + glob + "\"");
                 filteredList.put(entry.getKey(), entry.getValue());
@@ -522,9 +541,9 @@ public class BackupMaster {
         } catch (InitException e) {
             System.err.println("Failed initializing:\n" + e);
         } catch (SdkBaseException e) {
-            log.log(Level.SEVERE,"Failed Glacier operation", e);
+            log.log(Level.SEVERE,"Failed Glacier operation:\n", e);
         } catch (IOException e) {
-            log.log(Level.SEVERE,"Failed file operation: ", e);
+            log.log(Level.SEVERE,"Failed file operation:\n", e);
         } catch (Exception e) {
             log.log(Level.SEVERE, "General error: ", e);
         }
