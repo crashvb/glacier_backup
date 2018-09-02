@@ -32,6 +32,7 @@ public class Config {
 	public String log_level;
 	public int    log_files;
 	public int    log_size;
+	public int    file_transfer_slaves;
 	
 	private Config(Path configPath) {}
 	

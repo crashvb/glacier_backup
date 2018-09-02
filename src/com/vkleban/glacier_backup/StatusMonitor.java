@@ -32,9 +32,32 @@ import com.vkleban.glacier_backup.config.Config;
 
 public class StatusMonitor implements AutoCloseable {
     
-    private static Logger log= Logger.getLogger(StatusMonitor.class.getName());
+    private static final Logger log= Logger.getLogger(StatusMonitor.class.getName());
     
-    private static JsonParser parser_ = new JsonParser();
+    private static final JsonParser parser_ = new JsonParser();
+    
+    /**
+     * Class to return result of a job execution from Glacier
+     * 
+     * @author vova
+     */
+    public static class JobResult {
+        private final String job_;
+        private final boolean success_;
+        
+        private JobResult(String job, boolean success) {
+            job_= job;
+            success_= success;
+        }
+        
+        public String getJob() {
+            return job_;
+        }
+
+        public boolean succeeded() {
+            return success_;
+        }        
+    }
     
     private final Config c_= Config.get();
     
@@ -132,10 +155,10 @@ public class StatusMonitor implements AutoCloseable {
      * Given set of jobs, wait for any one of them to complete, then return the ID of the completed one
      * 
      * @param jobs
-     * @return
+     * @return job result: job ID + success boolean
      * @throws IllegalArgumentException
      */
-    public String waitForJobToComplete(Set<String> jobs) throws IllegalArgumentException {
+    public JobResult waitForJobToComplete(Set<String> jobs) throws IllegalArgumentException, AmazonClientException {
         if (jobs.size() == 0)
             throw new IllegalArgumentException("Cannot supply empty job set. Please fix your code");
         while (true) {
@@ -157,15 +180,18 @@ public class StatusMonitor implements AutoCloseable {
 
                 // Don't process this message if it wasn't the job we were looking for
                 if (!jobs.contains(messageJobId)) continue;
-
+                
+                jobs.remove(messageJobId);
+                
                 try {
                     if (StatusCode.Succeeded.toString().equals(messageStatus)) 
                     {
                         log.fine("Notifying requestor of job \"" + messageJobId + "\"");
-                        return messageJobId;
+                        return new JobResult(messageJobId, true);
                     }
                     if (StatusCode.Failed.toString().equals(messageStatus)) {
-                        throw new AmazonClientException("Archive retrieval failed");
+                        log.fine("Notifying requestor of job failure \"" + messageJobId + "\"");
+                        return new JobResult(messageJobId, true);
                     }
                 } finally {
                     deleteMessage(message);

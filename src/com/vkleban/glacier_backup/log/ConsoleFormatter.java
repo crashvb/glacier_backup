@@ -1,4 +1,4 @@
-package com.vkleban.glacier_backup;
+package com.vkleban.glacier_backup.log;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.logging.Formatter;
