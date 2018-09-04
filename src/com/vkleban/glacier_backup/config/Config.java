@@ -20,20 +20,20 @@ public class Config {
 	private static Gson gson;
 	
 	// Root upload/download directory
-	public String root_dir;
-	public String region;
-	public String vault;
-	public String access_key;
-	public String secret_key;
-	public String sns_topic_arn;
-	public long   polling_milliseconds;
-	public String retrieval_tier;
-    public String log_name;
-	public String log_level;
-	public int    log_files;
-	public int    log_size;
-	public int    file_transfer_slaves;
-	
+    public String  root_dir;
+    public String  region;
+    public String  vault;
+    public String  access_key;
+    public String  secret_key;
+    public String  sns_topic_arn;
+    public Long    polling_milliseconds;
+    public String  retrieval_tier;
+    public String  log_name;
+    public String  log_level;
+    public Integer log_files;
+    public Integer log_size;
+    public Integer file_transfer_slaves;
+
 	private Config(Path configPath) {}
 	
 	private static void enforceCoverage(String pathToObject, Object obj) throws InitException {

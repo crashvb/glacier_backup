@@ -179,7 +179,12 @@ public class StatusMonitor implements AutoCloseable {
                 log.fine("Received job \"" + messageJobId + "\" with status \"" + messageStatus + "\"");
 
                 // Don't process this message if it wasn't the job we were looking for
-                if (!jobs.contains(messageJobId)) continue;
+                if (!jobs.contains(messageJobId)) {
+                    log.warning("Received a message I haven't been subscribed for:\n"
+                               + BackupMaster.beautifyJson(messageBody));
+                    deleteMessage(message);
+                    continue;
+                }
                 
                 jobs.remove(messageJobId);
                 

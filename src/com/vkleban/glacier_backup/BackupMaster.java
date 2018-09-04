@@ -1,6 +1,7 @@
 package com.vkleban.glacier_backup;
 
 import java.io.BufferedReader;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -15,6 +16,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.logging.ConsoleHandler;
@@ -47,7 +49,7 @@ import com.vkleban.glacier_backup.log.ConsoleFormatter;
 import com.vkleban.glacier_backup.log.LogFormatter;
 import com.vkleban.glacier_backup.slave.DownloadSlave;
 import com.vkleban.glacier_backup.slave.SlaveDownloadJob;
-import com.vkleban.glacier_backup.slave.SlaveException;
+import com.vkleban.glacier_backup.slave.SlaveReport;
 
 public class BackupMaster extends GlacierClient {
 
@@ -340,12 +342,12 @@ public class BackupMaster extends GlacierClient {
         log.fine("Starting download slaves");
         // NOTE! BlockingQueue size must be at least the size of the number of jobs. Otherwise deadlock is possible
         ArrayBlockingQueue<SlaveDownloadJob> downloadJobs= new ArrayBlockingQueue<>(archives.size());
-        ArrayBlockingQueue<SlaveException> slaveExceptions= new ArrayBlockingQueue<>(archives.size());
+        ArrayBlockingQueue<SlaveReport> slaveExceptions= new ArrayBlockingQueue<>(archives.size());
         Set<Thread> workers= new HashSet<>(c_.file_transfer_slaves);
         // Map of failed archive downloads to their file names
         ArrayList<Archive> failedArchiveDownloads= new ArrayList<>();
         for (int i= 0; i < c_.file_transfer_slaves; i++) {
-            Thread worker= new Thread(new DownloadSlave(downloadJobs, slaveExceptions));
+            Thread worker= new Thread(new DownloadSlave(downloadJobs, slaveExceptions), "DownloadSlave-" + i);
             worker.start();
             workers.add(worker);
         }
@@ -383,15 +385,29 @@ public class BackupMaster extends GlacierClient {
             downloadJobs.add(new SlaveDownloadJob(null, null, true));
             while (workers.size() > 0) {
                 try {
-                    SlaveException slaveTerm= slaveExceptions.take();
+                    SlaveReport slaveTerm= slaveExceptions.take();
                     if (slaveTerm.getProblem() instanceof InterruptedException) {
                         Thread slave= slaveTerm.getSlave();
-                        workers.remove(slave);
                         log.fine("Joining thread \"" + slave + "\"");
+                        workers.remove(slave);
                         slave.join();                        
                     } else {
-                        log.fine("Adding \"" + slaveTerm.getJobId() + "\" to the failed downloads list");
-                        failedArchiveDownloads.add(jobArchiveMap.get(slaveTerm.getJobId()));                        
+                        String error= "Slave thread \"" + slaveTerm.getSlave().getName()
+                                + "\" has reported problem:\n"
+                                + slaveTerm.getProblem() + "\n";
+                        String jobId= slaveTerm.getJobId(); 
+                        if (jobId == null || !jobArchiveMap.containsKey(jobId)) {
+                            error+= "Job unknown. Possible job loss";
+                            failedArchiveDownloads.add(
+                                new Archive(
+                                    "UNKNOWN"
+                                  , "POSSIBLE LOSS OF FILES. PLEASE CHECK YOUR DOWNLOADS"));
+                        }
+                        else {
+                            error+= "Adding \"" + slaveTerm.getJobId() + "\" to the failed downloads list";
+                            failedArchiveDownloads.add(jobArchiveMap.get(slaveTerm.getJobId()));
+                        }
+                        log.severe(error);
                     }
                 } catch (InterruptedException e) {}
             }
@@ -407,6 +423,34 @@ public class BackupMaster extends GlacierClient {
             }
         }
     }
+    
+    /**
+     * Upload archive
+     * 
+     * @param name - file path relative to the configured root dir
+     * @throws AmazonClientException
+     * @throws FileNotFoundException
+     * @throws ArgumentException 
+     */
+//    public void upload() throws AmazonClientException, FileNotFoundException, ArgumentException {
+//        ArrayList<String> files= new ArrayList<>();
+//        try (Scanner sc= new Scanner(System.in)) {
+//            while (sc.hasNextLine())
+//                files.add(sc.nextLine());
+//        }
+//        log.info("Uploading " + files.size() + " files");
+//        for (String file : files) {
+//            log.info("Uploading \"" + file + "\"");
+//            String archiveId = archiveTransferManager_
+//                    .upload(c_.vault,
+//                            file,
+//                            Paths.get(c_.root_dir, file).toFile())
+//                    .getArchiveId();
+//            log.info("Upload successful. Archive ID: " + archiveId);
+//        }
+//        log.info("WARNING: Amazon Glacier updates your inventory once per day.\n"
+//                + "This means you won't see these uploads in the vault for up to a 24 hours");
+//    }
 
     private static String usage() {
         return "Usage:\n"
@@ -439,7 +483,7 @@ public class BackupMaster extends GlacierClient {
             BackupMaster bm= new BackupMaster();
 //            testSerialization();
             if (opts.containsKey("u")) {
-//                bm.upload(); TODO
+//                bm.upload();
             } else if (opts.containsKey("d")) {
                 String parameter;
                 if ((parameter = opts.get("g")) != null) {

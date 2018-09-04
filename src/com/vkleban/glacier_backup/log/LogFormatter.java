@@ -41,9 +41,10 @@ public class LogFormatter extends Formatter {
             String methodName= record.getSourceMethodName();
             if ( methodName != null) {
             	sb.append(String.format(
-            			"::%s:%d: ",
+            			"::%s:%d:%s ",
             			methodName,
-            			getOurClosestCallerLine(className, methodName)));
+            			getOurClosestCallerLine(className, methodName),
+            			Thread.currentThread().getName()));
             }
         }
         sb.append(formatMessage(record));

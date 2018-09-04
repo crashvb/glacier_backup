@@ -14,11 +14,11 @@ public class DownloadSlave extends TransferSlave {
     private static Logger log = Logger.getLogger(UploadSlave.class.getName());
 
     private final BlockingQueue<SlaveDownloadJob> downloads_;
-    private final BlockingQueue<SlaveException> exceptions_;
+    private final BlockingQueue<SlaveReport> reports_;
 
-    public DownloadSlave(BlockingQueue<SlaveDownloadJob> downloads, BlockingQueue<SlaveException> terminations) {
+    public DownloadSlave(BlockingQueue<SlaveDownloadJob> downloads, BlockingQueue<SlaveReport> reports) {
         downloads_ = downloads;
-        exceptions_= terminations;
+        reports_= reports;
     }
 
     /**
@@ -47,11 +47,16 @@ public class DownloadSlave extends TransferSlave {
                 job= downloads_.take();
                 if (job.isStopped())
                 {
+                    log.finer("Received thread stop request");
                     downloads_.add(job);
-                    throw new InterruptedException();
+                    reports_.add(
+                        new SlaveReport(
+                            job == null ? null : job.getJob(),
+                            new InterruptedException()));
+                    return;
                 }
-                File downloadedFile = Paths.get(c_.root_dir, job.getArchive().getFile()).toFile();
                 try {
+                    File downloadedFile = Paths.get(c_.root_dir, job.getArchive().getFile()).toFile();
                     ensureParentDirectory(downloadedFile);
                     log.info("Downloading file \"" + downloadedFile + "\"");
                     archiveTransferManager_.downloadJobOutput(null, c_.vault, job.getJob(), downloadedFile);
@@ -67,11 +72,14 @@ public class DownloadSlave extends TransferSlave {
                             + "\" has failed on Glacier.\n"
                             + "Failure to download single file won't stop the download cycle.\n"
                             + "This is best effort download");
-                    exceptions_.add(new SlaveException(Thread.currentThread(), job.getJob(), e));
+                    reports_.add(new SlaveReport(job.getJob(), e));
                 }
             }
-        } catch (InterruptedException e) {
-            exceptions_.add(new SlaveException(Thread.currentThread(), job == null ? null : job.getJob(), e));
+        } catch (Exception e) {
+            reports_.add(
+                new SlaveReport(
+                    job == null ? null : job.getJob(),
+                    new Exception("Unexpected exception", e)));            
         } finally {
             log.finer("Shutting down download slave thread \"" + Thread.currentThread() + "\"");
         }

@@ -1,13 +1,13 @@
 package com.vkleban.glacier_backup.slave;
 
-public class SlaveException {
+public class SlaveReport {
     
     private Thread slave_;
     private String jobId_;
     private Exception problem_;
     
-    public SlaveException(Thread slave, String jobId, Exception problem) {
-        slave_= slave;
+    public SlaveReport(String jobId, Exception problem) {
+        slave_= Thread.currentThread();
         problem_= problem;
         jobId_= jobId;
     }
