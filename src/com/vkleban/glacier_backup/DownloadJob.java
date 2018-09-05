@@ -1,6 +1,4 @@
-package com.vkleban.glacier_backup.slave;
-
-import com.vkleban.glacier_backup.Archive;
+package com.vkleban.glacier_backup;
 
 /**
  * Piece of work to be passed to download slaves
@@ -8,32 +6,25 @@ import com.vkleban.glacier_backup.Archive;
  * @author vova
  *
  */
-public class SlaveDownloadJob {
+public class DownloadJob {
     private String job_;
     private Archive archive_;
-    private boolean stop_;
     
     /**
      * @param job - download job ID
      * @param file - file path to download the archive to
-     * @param stop - do we have to stop downloading
      */
-    public SlaveDownloadJob(String job, Archive archive, boolean stop) {
+    public DownloadJob(String job, Archive archive) {
         job_= job;
         archive_= archive;
-        stop_= stop;
     }
     
-    public String getJob() {
+    public String getJobId() {
         return job_;
     }
 
     public Archive getArchive() {
         return archive_;
-    }
-    
-    public boolean isStopped() {
-        return stop_;
     }
 
 }

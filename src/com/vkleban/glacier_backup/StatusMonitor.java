@@ -186,8 +186,6 @@ public class StatusMonitor implements AutoCloseable {
                     continue;
                 }
                 
-                jobs.remove(messageJobId);
-                
                 try {
                     if (StatusCode.Succeeded.toString().equals(messageStatus)) 
                     {

@@ -11,12 +11,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.logging.ConsoleHandler;
@@ -48,8 +46,8 @@ import com.vkleban.glacier_backup.config.Config;
 import com.vkleban.glacier_backup.log.ConsoleFormatter;
 import com.vkleban.glacier_backup.log.LogFormatter;
 import com.vkleban.glacier_backup.slave.DownloadSlave;
-import com.vkleban.glacier_backup.slave.SlaveDownloadJob;
-import com.vkleban.glacier_backup.slave.SlaveReport;
+import com.vkleban.glacier_backup.slave.SlaveRequest;
+import com.vkleban.glacier_backup.slave.SlaveResponse;
 
 public class BackupMaster extends GlacierClient {
 
@@ -171,12 +169,12 @@ public class BackupMaster extends GlacierClient {
         log.info("Attempting to download files by glob \"" + glob + "\"");
         PathMatcher matcher= FileSystems.getDefault()
                 .getPathMatcher("glob:" + glob);
-        List<Archive> filteredList= new ArrayList<>();
+        Set<Archive> filteredList= new LinkedHashSet<>();
         String inventory= getListing();
         log.finer("Received inventory:\n" + beautifyJson(inventory));
         for (Archive entry : parseInventoryJSONToArchiveFileMap(inventory)) {
-            if (matcher.matches(Paths.get(entry.getFile()))) {
-                log.info("File \"" + entry.getFile() + "\" matched pattern \"" + glob + "\"");
+            if (matcher.matches(Paths.get(entry.getFileName()))) {
+                log.info("File \"" + entry.getFileName() + "\" matched pattern \"" + glob + "\"");
                 filteredList.add(entry);
             }
         }
@@ -202,13 +200,13 @@ public class BackupMaster extends GlacierClient {
      * 
      * @param archiveNameMap - map of archive IDs to file names
      */
-    public void removeList(List<Archive> archiveNameMap) {
+    public void removeList(Set<Archive> archiveNameMap) {
         for (Archive archive : archiveNameMap)
         {
-            log.info("Removing archive \"" + archive.getFile() + "\" with archive ID \"" + archive.getArchive() + "\"");
+            log.info("Removing archive \"" + archive.getFileName() + "\" with archive ID \"" + archive.getArchiveId() + "\"");
             DeleteArchiveRequest request = new DeleteArchiveRequest()
                     .withVaultName(c_.vault)
-                    .withArchiveId(archive.getArchive());
+                    .withArchiveId(archive.getArchiveId());
             amazonGlacier_.deleteArchive(request);
         }
     }
@@ -225,10 +223,10 @@ public class BackupMaster extends GlacierClient {
                   + "You still have few hours to change your mind");
         PathMatcher matcher= FileSystems.getDefault()
                 .getPathMatcher("glob:" + glob);
-        List<Archive> filteredList= new ArrayList<>();
+        Set<Archive> filteredList= new LinkedHashSet<>();
         for (Archive entry : parseInventoryJSONToArchiveFileMap(getListing())) {
-            if (matcher.matches(Paths.get(entry.getFile()))) {
-                log.info("File \"" + entry.getFile() + "\" matched pattern \"" + glob + "\"");
+            if (matcher.matches(Paths.get(entry.getFileName()))) {
+                log.info("File \"" + entry.getFileName() + "\" matched pattern \"" + glob + "\"");
                 filteredList.add(entry);
             }
         }
@@ -289,12 +287,12 @@ public class BackupMaster extends GlacierClient {
      * @param inventory - inventory output
      * @return List of archives for which ArchiveDescription matches glob
      */
-    public List<Archive> parseInventoryJSONToArchiveFileMap(String inventory) {
+    public Set<Archive> parseInventoryJSONToArchiveFileMap(String inventory) {
 
         JsonParser parser = new JsonParser();
         JsonObject parsedListing= parser.parse(inventory).getAsJsonObject();
         JsonArray archiveList= parsedListing.getAsJsonArray("ArchiveList");
-        List<Archive> archiveIds= new ArrayList<>();
+        Set<Archive> archiveIds= new LinkedHashSet<>();
         for (JsonElement fileEntry : archiveList) {
             JsonObject object= fileEntry.getAsJsonObject();
             String fileName= object.get("ArchiveDescription").getAsString();
@@ -309,13 +307,13 @@ public class BackupMaster extends GlacierClient {
      * @param archiveIDs - list of archive IDs to download
      * @return map of job IDs to archives
      */
-    private Map<String, Archive> initiateDownloadJobs(List<Archive> archives) {
+    private Map<String, Archive> initiateDownloadJobs(Set<Archive> archives) {
         Map<String, Archive> jobArchiveMap= new HashMap<>();
         log.info("Creating file download jobs");
         for (Archive archiveID: archives) {
             JobParameters jobParameters = new JobParameters()
                     .withType("archive-retrieval")
-                    .withArchiveId(archiveID.getArchive())
+                    .withArchiveId(archiveID.getArchiveId())
                     .withTier(c_.retrieval_tier)
                     .withSNSTopic(c_.sns_topic_arn);
                 
@@ -337,86 +335,85 @@ public class BackupMaster extends GlacierClient {
      * @param archives - list of archives
      * @throws IOException when file operation errors happen
      */
-    public void downloadList(List<Archive> archives) throws IOException {
+    public void downloadList(Set<Archive> archives) throws IOException {
         Map<String, Archive> jobArchiveMap= initiateDownloadJobs(archives);
         log.fine("Starting download slaves");
         // NOTE! BlockingQueue size must be at least the size of the number of jobs. Otherwise deadlock is possible
-        ArrayBlockingQueue<SlaveDownloadJob> downloadJobs= new ArrayBlockingQueue<>(archives.size());
-        ArrayBlockingQueue<SlaveReport> slaveExceptions= new ArrayBlockingQueue<>(archives.size());
+        ArrayBlockingQueue<SlaveRequest<DownloadJob>> downloadJobs= new ArrayBlockingQueue<>(archives.size());
+        ArrayBlockingQueue<SlaveResponse<DownloadJob>> slaveReplies=
+            new ArrayBlockingQueue<>(archives.size()
+                                   + c_.file_transfer_slaves);
         Set<Thread> workers= new HashSet<>(c_.file_transfer_slaves);
-        // Map of failed archive downloads to their file names
-        ArrayList<Archive> failedArchiveDownloads= new ArrayList<>();
         for (int i= 0; i < c_.file_transfer_slaves; i++) {
-            Thread worker= new Thread(new DownloadSlave(downloadJobs, slaveExceptions), "DownloadSlave-" + i);
+            Thread worker= new Thread(new DownloadSlave(downloadJobs, slaveReplies), "DownloadSlave-" + i);
             worker.start();
             workers.add(worker);
         }
         log.info("Awaiting download jobs completion");
         try (StatusMonitor jobMonitor = new StatusMonitor(amazonSQS_, amazonSNS_)) {
-            Set<String> jobsToComplete= new HashSet<>();
-            jobsToComplete.addAll(jobArchiveMap.keySet());
+            Set<String> jobsToComplete= jobArchiveMap.keySet();
             while (jobsToComplete.size() != 0) {
                 StatusMonitor.JobResult jobResult= jobMonitor.waitForJobToComplete(jobsToComplete);
-                Archive archive= jobArchiveMap.get(jobResult.getJob());
+                Archive archive= jobArchiveMap.remove(jobResult.getJob());
                 if (!jobResult.succeeded()) {
                     log.severe("Download job of file \""
-                            + archive.getFile()
+                            + archive.getFileName()
                             + "\" with archive ID \""
-                            + archive.getArchive()
+                            + archive.getArchiveId()
                             + "\" using job \""
                             + jobResult.getJob()
                             + "\" has failed on Glacier.\n"
                             + "Failure to download single file won't stop the download cycle.\n"
                             + "This is best effort download");
-                    failedArchiveDownloads.add(archive);
                     continue;
                 }
                 log.info("Scheduling download of file \""
-                        + archive.getFile()
+                        + archive.getFileName()
                         + "\" with archive ID \""
                         + jobResult.getJob()
                         + "\" using job \""
                         + jobResult.getJob()
                         + "\"");
-                downloadJobs.add(new SlaveDownloadJob(jobResult.getJob(), archive, false));
+                downloadJobs.add(new SlaveRequest<DownloadJob>(new DownloadJob(jobResult.getJob(), archive) , false));
             }
             log.fine("End of jobs. Announcing shutdown to slave threads");
         } finally {
-            downloadJobs.add(new SlaveDownloadJob(null, null, true));
+            downloadJobs.add(new SlaveRequest<DownloadJob>(null, true));
             while (workers.size() > 0) {
                 try {
-                    SlaveReport slaveTerm= slaveExceptions.take();
-                    if (slaveTerm.getProblem() instanceof InterruptedException) {
-                        Thread slave= slaveTerm.getSlave();
+                    SlaveResponse<DownloadJob> slaveResponse= slaveReplies.take();
+                    if (slaveResponse.isStopped()) {
+                        Thread slave= slaveResponse.getSlave();
                         log.fine("Joining thread \"" + slave + "\"");
                         workers.remove(slave);
                         slave.join();                        
+                    } else if (slaveResponse.getException() == null) {
+                        Archive downloadedArchive= slaveResponse.getResponse().getArchive();
+                        log.fine("Registering archive with ID \""
+                               + downloadedArchive.getArchiveId()
+                               + "\" as downloaded");
+                        archives.remove(downloadedArchive);
                     } else {
-                        String error= "Slave thread \"" + slaveTerm.getSlave().getName()
+                        String error= "Download slave thread \"" + slaveResponse.getSlave().getName()
                                 + "\" has reported problem:\n"
-                                + slaveTerm.getProblem() + "\n";
-                        String jobId= slaveTerm.getJobId(); 
-                        if (jobId == null || !jobArchiveMap.containsKey(jobId)) {
+                                + slaveResponse.getException() + "\n";
+                        DownloadJob job= slaveResponse.getResponse();
+                        if (job == null) {
                             error+= "Job unknown. Possible job loss";
-                            failedArchiveDownloads.add(
-                                new Archive(
-                                    "UNKNOWN"
-                                  , "POSSIBLE LOSS OF FILES. PLEASE CHECK YOUR DOWNLOADS"));
                         }
                         else {
-                            error+= "Adding \"" + slaveTerm.getJobId() + "\" to the failed downloads list";
-                            failedArchiveDownloads.add(jobArchiveMap.get(slaveTerm.getJobId()));
+                            error+= "Job \"" + job.getJobId() + "\" has failed";
                         }
                         log.severe(error);
                     }
                 } catch (InterruptedException e) {}
             }
-            if (failedArchiveDownloads.size() == 0) {
+            if (archives.size() == 0) {
                 log.info("Downloads have completed successfully");
             } else {
                 Gson gson = new GsonBuilder().setPrettyPrinting().create();
                 JsonObject archiveList = new JsonObject();
-                archiveList.add("ArchiveList", gson.toJsonTree(failedArchiveDownloads));
+                archiveList.add("ArchiveList", gson.toJsonTree(archives));
                 log.severe("Downloads have completed with errors. "
                          + "The following list of archives failed to download:\n"
                          + gson.toJson(archiveList));

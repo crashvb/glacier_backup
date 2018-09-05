@@ -8,15 +8,16 @@ import java.util.concurrent.BlockingQueue;
 import java.util.logging.Logger;
 
 import com.vkleban.glacier_backup.Archive;
+import com.vkleban.glacier_backup.DownloadJob;
 
 public class DownloadSlave extends TransferSlave {
 
     private static Logger log = Logger.getLogger(UploadSlave.class.getName());
 
-    private final BlockingQueue<SlaveDownloadJob> downloads_;
-    private final BlockingQueue<SlaveReport> reports_;
+    private final BlockingQueue<SlaveRequest<DownloadJob>> downloads_;
+    private final BlockingQueue<SlaveResponse<DownloadJob>> reports_;
 
-    public DownloadSlave(BlockingQueue<SlaveDownloadJob> downloads, BlockingQueue<SlaveReport> reports) {
+    public DownloadSlave(BlockingQueue<SlaveRequest<DownloadJob>> downloads, BlockingQueue<SlaveResponse<DownloadJob>> reports) {
         downloads_ = downloads;
         reports_= reports;
     }
@@ -39,47 +40,48 @@ public class DownloadSlave extends TransferSlave {
 
     @Override
     public void run() {
-        SlaveDownloadJob job= null;
+        SlaveRequest<DownloadJob> request= null;
         log.finer("Starting download slave thread \"" + Thread.currentThread() + "\"");
         try {
             while (true) {
-                job= null; // next line can fail. This is to avoid misreporting failed job
-                job= downloads_.take();
-                if (job.isStopped())
+                request= null; // next line can fail. This is to avoid misreporting failed job
+                request= downloads_.take();
+                DownloadJob job= request.getRequest();
+                if (request.isStopped())
                 {
                     log.finer("Received thread stop request");
-                    downloads_.add(job);
+                    // passing the request on to the next thread
+                    downloads_.add(request);
                     reports_.add(
-                        new SlaveReport(
-                            job == null ? null : job.getJob(),
-                            new InterruptedException()));
+                        new SlaveResponse<DownloadJob>(job, null, true));
                     return;
                 }
                 try {
-                    File downloadedFile = Paths.get(c_.root_dir, job.getArchive().getFile()).toFile();
+                    File downloadedFile = Paths.get(c_.root_dir, job.getArchive().getFileName()).toFile();
                     ensureParentDirectory(downloadedFile);
                     log.info("Downloading file \"" + downloadedFile + "\"");
-                    archiveTransferManager_.downloadJobOutput(null, c_.vault, job.getJob(), downloadedFile);
+                    archiveTransferManager_.downloadJobOutput(null, c_.vault, job.getJobId(), downloadedFile);
                     log.info("Download of \"" + downloadedFile + "\" completed successfully");
+                    reports_.add(new SlaveResponse<DownloadJob>(job, null, false));
                 } catch (Exception e) {
                     Archive archive= job.getArchive();
                     log.severe("Download job of file \""
-                            + archive.getFile()
+                            + archive.getFileName()
                             + "\" with archive ID \""
-                            + archive.getArchive()
+                            + archive.getArchiveId()
                             + "\" using job \""
-                            + job.getJob()
+                            + job.getJobId()
                             + "\" has failed on Glacier.\n"
                             + "Failure to download single file won't stop the download cycle.\n"
                             + "This is best effort download");
-                    reports_.add(new SlaveReport(job.getJob(), e));
+                    reports_.add(new SlaveResponse<DownloadJob>(job, e, false));
                 }
             }
         } catch (Exception e) {
             reports_.add(
-                new SlaveReport(
-                    job == null ? null : job.getJob(),
-                    new Exception("Unexpected exception", e)));            
+                new SlaveResponse<DownloadJob>(
+                    request == null ? null : request.getRequest(),
+                    new Exception("Unexpected exception", e), true));            
         } finally {
             log.finer("Shutting down download slave thread \"" + Thread.currentThread() + "\"");
         }

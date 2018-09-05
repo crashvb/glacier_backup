@@ -14,12 +14,22 @@ public class Archive {
         file_= file;
     }
 
-    public String getArchive() {
+    public String getArchiveId() {
         return archive_;
     }
 
-    public String getFile() {
+    public String getFileName() {
         return file_;
+    }
+    
+    @Override
+    public int hashCode() {
+        return archive_.hashCode();
+    }
+    
+    @Override
+    public boolean equals(Object another) {
+        return another instanceof Archive && ((Archive) another).archive_.equals(archive_); 
     }
 
 }
