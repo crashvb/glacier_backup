@@ -11,5 +11,6 @@ To build this, you first need to build my ArgumentParser first. The configuratio
 	"log_name" : "glacier_backup_%g.log",
 	"log_level" : "FINER",
 	"log_files" : 2,
-	"log_size" : 10485760
+	"log_size" : 10485760,
+	"file_transfer_slaves" : 10
 }

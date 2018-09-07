@@ -9,9 +9,9 @@ public class Archive {
     @SerializedName("ArchiveDescription")
     private String file_;
     
-    public Archive(String archive, String file) {
-        archive_= archive;
-        file_= file;
+    public Archive(String archiveId, String fileName) {
+        archive_= archiveId;
+        file_= fileName;
     }
 
     public String getArchiveId() {
