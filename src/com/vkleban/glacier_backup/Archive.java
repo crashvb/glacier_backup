@@ -8,10 +8,13 @@ public class Archive {
     private String archive_;
     @SerializedName("ArchiveDescription")
     private String file_;
+    @SerializedName("SHA256TreeHash")
+    private String treeHash_;
     
-    public Archive(String archiveId, String fileName) {
+    public Archive(String archiveId, String fileName, String treeHash) {
         archive_= archiveId;
         file_= fileName;
+        treeHash_= treeHash;
     }
 
     public String getArchiveId() {
@@ -22,6 +25,10 @@ public class Archive {
         return file_;
     }
     
+    public String getTreeHash() {
+        return treeHash_;
+    }
+    
     @Override
     public int hashCode() {
         return archive_.hashCode();
@@ -29,7 +36,10 @@ public class Archive {
     
     @Override
     public boolean equals(Object another) {
-        return another instanceof Archive && ((Archive) another).archive_.equals(archive_); 
+        if (!(another instanceof Archive))
+            return false;
+        Archive anotherArchive= (Archive) another;
+        return anotherArchive.archive_.equals(archive_) && anotherArchive.treeHash_.equals(treeHash_); 
     }
 
 }

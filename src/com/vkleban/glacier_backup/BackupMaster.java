@@ -1,6 +1,7 @@
 package com.vkleban.glacier_backup;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -11,6 +12,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -27,6 +32,7 @@ import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.AmazonServiceException;
@@ -312,8 +318,11 @@ public class BackupMaster extends GlacierClient {
         Set<Archive> archiveIds= new LinkedHashSet<>();
         for (JsonElement fileEntry : archiveList) {
             JsonObject object= fileEntry.getAsJsonObject();
-            String fileName= object.get("ArchiveDescription").getAsString();
-            archiveIds.add(new Archive(object.get("ArchiveId").getAsString(), fileName));
+            archiveIds.add(
+                new Archive(
+                    object.get("ArchiveId").getAsString(),
+                    object.get("ArchiveDescription").getAsString(),
+                    object.get("SHA256TreeHash").getAsString()));
         }
         return archiveIds;
     }
@@ -356,7 +365,7 @@ public class BackupMaster extends GlacierClient {
         Map<String, Archive> jobArchiveMap= initiateDownloadJobs(archives);
         log.fine("Starting download slaves");
         // NOTE! downloadJobs size must be at least the size of the number of jobs. Otherwise deadlock is possible
-        ArrayBlockingQueue<SlaveRequest<DownloadJob>> downloadJobs= new ArrayBlockingQueue<>(archives.size());
+        ArrayBlockingQueue<SlaveRequest<DownloadJob>> downloadJobs= new ArrayBlockingQueue<>(archives.size() + 1);
         // NOTE! slaveReplies size must be at least the size of the number of jobs + number of threads
         // Otherwise deadlock is possible
         ArrayBlockingQueue<SlaveResponse<DownloadJob>> slaveReplies=
@@ -375,15 +384,16 @@ public class BackupMaster extends GlacierClient {
                 StatusMonitor.JobResult jobResult= jobMonitor.waitForJobToComplete(jobsToComplete);
                 Archive archive= jobArchiveMap.remove(jobResult.getJob());
                 if (!jobResult.succeeded()) {
-                    log.severe("Download job of file \""
-                            + archive.getFileName()
-                            + "\" with archive ID \""
-                            + archive.getArchiveId()
-                            + "\" using job \""
-                            + jobResult.getJob()
-                            + "\" has failed on Glacier.\n"
-                            + "Failure to download single file won't stop the download cycle.\n"
-                            + "This is best effort download");
+                    log.severe(
+                        "Download job of file \""
+                        + archive.getFileName()
+                        + "\" with archive ID \""
+                        + archive.getArchiveId()
+                        + "\" using job \""
+                        + jobResult.getJob()
+                        + "\" has failed on Glacier.\n"
+                        + "Failure to download single file won't stop the download cycle.\n"
+                        + "This is best effort download");
                     continue;
                 }
                 log.info("Scheduling download of file \""
@@ -438,22 +448,99 @@ public class BackupMaster extends GlacierClient {
     }
     
     /**
-     * Upload files
+     * Upload files provided in standard input, while filtering them against existing inventory,
+     * given as a local inventory file.
+     * The existing inventory is updated as soon as upload is finished
      * 
-     * @param name - file path relative to the configured root dir
+     * @param inventoryFileName - inventory file 
+     * @throws AmazonClientException when Amazon Glacier operation fails
+     * @throws IOException when disk operation fails
+     */
+    public void uploadIncremental(String inventoryFileName)
+        throws AmazonClientException, IOException
+    {
+        Set<Archive> existingArchives;
+        // Load inventory and check the corresponding file is writable
+        Path inventoryPath= Paths.get(c_.root_dir, inventoryFileName);
+        String inventoryError= "Unable to ensure I can update \"" + inventoryPath + "\" file";
+        File inventoryFile= inventoryPath.toFile();
+        if (!inventoryFile.isFile()) {
+            log.warning("Given inventory file does not exist. Will create new one");
+            existingArchives= new LinkedHashSet<>();
+            try {
+                Files.createFile(inventoryPath);
+                Files.delete(inventoryPath);
+            } catch (Exception e) {
+                throw new IOException(inventoryError, e);
+            }
+        } else {
+            if (!inventoryFile.canWrite())
+                throw new IOException(inventoryError);
+            existingArchives= parseInventoryJSONToArchiveFileMap(
+                new String(Files.readAllBytes(inventoryPath),
+                    StandardCharsets.UTF_8));
+        }
+        // Load file names and filter them through the inventory contents
+        Set<String> filter= existingArchives.stream().map(a -> a.getFileName()).collect(Collectors.toSet());
+        Set<String> files= new LinkedHashSet<>();
+        try (Scanner sc= new Scanner(System.in)) {
+            while (sc.hasNextLine()) {
+                String fileName= sc.nextLine();
+                if (filter.contains(fileName)) {
+                    log.info("Skipping existing in inventory \"" + fileName + "\"");
+                } else {
+                    files.add(fileName);
+                }
+            }
+        }
+        // Upload files
+        List<Archive> uploaded= upload(new LinkedHashSet<>(files));
+        // Update the inventory with freshly uploaded files
+        if (uploaded.size() == 0)
+            return;
+        existingArchives.addAll(uploaded);
+        Path tempFile= inventoryPath.resolveSibling(
+            inventoryFileName +
+            DateTimeFormatter.ofPattern("'.'yyyyMMdd'T'HHmmss'.'SSS").format(LocalDateTime.now()));
+        log.fine("Creating temp file \"" + tempFile + "\"");
+        Files.write(
+            tempFile,
+            ArchivesToInventoryJSON(existingArchives).getBytes(StandardCharsets.UTF_8),
+            StandardOpenOption.CREATE_NEW);
+        log.info("Updating inventory \"" + inventoryPath + "\"");
+        Files.move(tempFile, inventoryPath, StandardCopyOption.ATOMIC_MOVE);
+    }
+    
+    /**
+     * Upload files given in standard input and new line separated
+     * 
      * @throws AmazonClientException
      * @throws FileNotFoundException
-     * @throws ArgumentException 
      */
-    public void upload() throws AmazonClientException, FileNotFoundException, ArgumentException {
+    public void uploadUnfiltered() throws AmazonClientException, FileNotFoundException {
         Set<String> files= new LinkedHashSet<>();
         try (Scanner sc= new Scanner(System.in)) {
             while (sc.hasNextLine())
                 files.add(sc.nextLine());
         }
-        log.fine("Starting download slaves");
+        upload(files);
+    }
+    
+    /**
+     * Upload files given by set of relative paths given as strings
+     * 
+     * @param files - set of relative paths given as strings. NOTE! The set is modified here
+     * @return the list of successfully uploaded files
+     * 
+     * @throws AmazonClientException when Amazon Glacier operation fails
+     * @throws FileNotFoundException when file to be uploaded is not found
+     */
+    public List<Archive> upload(Set<String> files)
+        throws AmazonClientException, FileNotFoundException
+    {
+        log.fine("Starting upload slaves");
         // NOTE! downloadJobs size must be at least the size of the number of jobs. Otherwise deadlock is possible
-        ArrayBlockingQueue<SlaveRequest<String>> uploadJobs= new ArrayBlockingQueue<>(files.size());
+        ArrayBlockingQueue<SlaveRequest<String>> uploadJobs= new ArrayBlockingQueue<>(files.size() + 1);
         // NOTE! slaveReplies size must be at least the size of the number of jobs + number of threads
         // Otherwise deadlock is possible
         ArrayBlockingQueue<SlaveResponse<Archive>> slaveReplies=
@@ -491,8 +578,8 @@ public class BackupMaster extends GlacierClient {
                     files.remove(uploadedArchive.getFileName());
                 } else {
                     String file= slaveResponse.getResponse() == null
-                                     ? null
-                                     : slaveResponse.getResponse().getFileName(); 
+                            ? null
+                            : slaveResponse.getResponse().getFileName(); 
                     log.severe("Upload slave thread \"" + slaveResponse.getSlave().getName()
                             + "\" while uploading "
                             + (file == null ? "UNKNOWN FILE" : "\"" + file + "\"")
@@ -501,8 +588,9 @@ public class BackupMaster extends GlacierClient {
                 }
             } catch (InterruptedException e) {}
         }
-        log.info("Inventory of successfully uploaded files:\n"
-               + ArchivesToInventoryJSON(uploaded));
+        log.info(
+            "Inventory of successfully uploaded files:\n"
+            + ArchivesToInventoryJSON(uploaded));
         if (files.size() == 0) {
             log.info("All uploads have completed successfully");
         } else {
@@ -515,29 +603,33 @@ public class BackupMaster extends GlacierClient {
         }
         log.info("WARNING: Amazon Glacier updates your inventory once per day.\n"
                 + "This means you won't see these uploads in the vault for up to a 24 hours");
+        return uploaded;
     }
 
     private static String usage() {
-        return "Usage:\n"
-                + "java -jar glacier_backup.jar {h|c:{u|l|d{g:|n:}|r{g:|n:}}}\n"
-                + "where:\n"
-                + "-h   usage\n"
-                + "-c   configuration file\n"
-                + "Upload:     <file listing> | java -jar glacier_backup.jar -c <config file> -u\n"
-                + "List files: java -jar glacier_backup.jar -l\n"
-                + "Download files by glob (best effort):\n"
-                + "            java -jar glacier_backup.jar -c <config file> -d -g <Java style file glob>\n"
-                + "Download files by inventory (best effort):\n"
-                + "            java -jar glacier_backup.jar -c <config file> -d -n <File with inventory style JSON>\n"
-                + "Remove files by glob:\n"
-                + "            java -jar glacier_backup.jar -c <config file> -r -g <Java style file glob>\n"
-                + "Remove files by inventory:\n"
-                + "            java -jar glacier_backup.jar -c <config file> -r -n <File with inventory style JSON>\n";
+        return
+            "Usage:\n"
+            + "java -jar glacier_backup.jar {h|c:{u[i:]|l|d{g:|n:}|r{g:|n:}}}\n"
+            + "where:\n"
+            + "-h   usage\n"
+            + "-c   configuration file\n\n"
+            + "Upload. If inventory is given, upload only what's not yet there, updating the inventory afterwards:\n"
+            + "    <file listing> | java -jar glacier_backup.jar -c <config file> -u [ -i <inventory> ]\n"
+            + "List files:\n"
+            + "    java -jar glacier_backup.jar -l\n"
+            + "Download files by glob (best effort):\n"
+            + "    java -jar glacier_backup.jar -c <config file> -d -g <Java style file glob>\n"
+            + "Download files by inventory (best effort):\n"
+            + "    java -jar glacier_backup.jar -c <config file> -d -n <File with inventory style JSON>\n"
+            + "Remove files by glob:\n"
+            + "    java -jar glacier_backup.jar -c <config file> -r -g <Java style file glob>\n"
+            + "Remove files by inventory:\n"
+            + "    java -jar glacier_backup.jar -c <config file> -r -n <File with inventory style JSON>\n";
     }
     
     public static void main(String[] args) throws AmazonServiceException, AmazonClientException {
         try {
-            ArgumentParser optParser = new ArgumentParser("{h|c:{u|l|d{g:|n:}|r{g:|n:}}}");
+            ArgumentParser optParser = new ArgumentParser("{h|c:{u[i:]|l|d{g:|n:}|r{g:|n:}}}");
             Map<String, String> opts = optParser.parseArguments(args);
             if (opts.containsKey("h")) {
                 System.out.println(usage());
@@ -548,17 +640,21 @@ public class BackupMaster extends GlacierClient {
             BackupMaster bm= new BackupMaster();
 //            testSerialization();
             if (opts.containsKey("u")) {
-                bm.upload();
+                String parameter = opts.get("i");
+                if (parameter != null)
+                    bm.uploadIncremental(parameter);
+                else
+                    bm.uploadUnfiltered();
             } else if (opts.containsKey("d")) {
-                String parameter;
-                if ((parameter = opts.get("g")) != null) {
+                String parameter = opts.get("g");
+                if (parameter != null) {
                     bm.downloadByGlob(parameter);
                 } else {
                     bm.downloadByListing(Paths.get(opts.get("n")));
                 }
             } else if (opts.containsKey("r")) {
-                String parameter;
-                if ((parameter = opts.get("g")) != null) {
+                String parameter = opts.get("g");
+                if (parameter != null) {
                     bm.removeByGlob(parameter);
                 } else {
                     bm.removeByListing(Paths.get(opts.get("n")));

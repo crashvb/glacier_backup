@@ -1,9 +1,11 @@
 package com.vkleban.glacier_backup.slave;
 
+import java.io.File;
 import java.nio.file.Paths;
 import java.util.concurrent.BlockingQueue;
 import java.util.logging.Logger;
 
+import com.amazonaws.services.glacier.TreeHashGenerator;
 import com.vkleban.glacier_backup.Archive;
 
 public class UploadSlave extends TransferSlave {
@@ -38,15 +40,20 @@ public class UploadSlave extends TransferSlave {
                 }
                 try {
                     log.info("Uploading \"" + fileName + "\"");
+                    File uploadFile= Paths.get(c_.root_dir, fileName).toFile();
                     String archiveId = archiveTransferManager_
                             .upload(c_.vault,
                                     fileName,
-                                    Paths.get(c_.root_dir, fileName).toFile())
+                                    uploadFile)
                             .getArchiveId();
                     log.info("Upload successful. Archive ID: " + archiveId);
-                    reports_.add(new SlaveResponse<Archive>(new Archive(archiveId, fileName), null, false));
+                    reports_.add(new SlaveResponse<Archive>(
+                        new Archive(
+                            archiveId,
+                            fileName,
+                            TreeHashGenerator.calculateTreeHash(uploadFile)), null, false));
                 } catch (Exception e) {
-                    Archive archive= new Archive(null, fileName);
+                    Archive archive= new Archive(null, fileName, null);
                     log.severe("Upload job of file \""
                             + archive.getFileName()
                             + "\" has failed on Glacier.\n"
@@ -58,7 +65,7 @@ public class UploadSlave extends TransferSlave {
         } catch (Exception e) {
             reports_.add(
                 new SlaveResponse<Archive>(
-                    request == null ? null : new Archive(null, request.getRequest()),
+                    request == null ? null : new Archive(null, request.getRequest(), null),
                     new Exception("Unexpected exception", e), true));            
         } finally {
             log.finer("Shutting down upload slave thread \"" + Thread.currentThread() + "\"");
