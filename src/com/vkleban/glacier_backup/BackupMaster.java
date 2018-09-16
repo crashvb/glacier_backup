@@ -37,6 +37,7 @@ import java.util.stream.Collectors;
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.SdkBaseException;
+import com.amazonaws.services.glacier.TreeHashGenerator;
 import com.amazonaws.services.glacier.model.DeleteArchiveRequest;
 import com.amazonaws.services.glacier.model.DescribeJobRequest;
 import com.amazonaws.services.glacier.model.GetJobOutputRequest;
@@ -130,7 +131,9 @@ public class BackupMaster extends GlacierClient {
             while ((inputLine = in.readLine()) != null) {
                 rawJson.append(inputLine);
             }
-            return rawJson.toString();
+            String output= rawJson.toString();
+            log.finest("JSON job output \"" + output + "\"");
+            return output;
         }
     }
     
@@ -605,16 +608,50 @@ public class BackupMaster extends GlacierClient {
                 + "This means you won't see these uploads in the vault for up to a 24 hours");
         return uploaded;
     }
+    
+    /**
+     * Verify checksums of the files referenced by given inventory
+     * 
+     * @param inventory - inventory file to verify
+     * @throws IOException when file operations fail
+     */
+    public void verify(String inventory) throws IOException {
+        for (Archive testArchive:
+                parseInventoryJSONToArchiveFileMap(
+                    new String(Files.readAllBytes(Paths.get(inventory)),
+                    StandardCharsets.UTF_8)))
+        {
+            String fileName= testArchive.getFileName();
+            try {
+                String actualChecksum = TreeHashGenerator.calculateTreeHash(new File(fileName));
+                if (actualChecksum.equals(testArchive.getTreeHash())) {
+                    log.info("\"" + fileName + "\" is OK");
+                } else {
+                    log.severe(
+                        "FAILED checksum test of \"" +
+                        fileName +
+                        "\". Expected checksum: " +
+                        testArchive.getTreeHash() +
+                        ". Actual checksum: " +
+                        actualChecksum);
+                }
+            } catch (Exception e) {
+                log.log(Level.SEVERE, "FAILED calculating checksum of \"" + fileName + "\"", e);
+            }
+        }
+    }
 
     private static String usage() {
         return
             "Usage:\n"
-            + "java -jar glacier_backup.jar {h|c:{u[i:]|l|d{g:|n:}|r{g:|n:}}}\n"
+            + "java -jar glacier_backup.jar {h|c:{u[i:]|vi:|l|d{g:|n:}|r{g:|n:}}}\n"
             + "where:\n"
             + "-h   usage\n"
             + "-c   configuration file\n\n"
             + "Upload. If inventory is given, upload only what's not yet there, updating the inventory afterwards:\n"
             + "    <file listing> | java -jar glacier_backup.jar -c <config file> -u [ -i <inventory> ]\n"
+            + "Verify checksums of the files referenced by given inventory:\n"
+            + "    java -jar glacier_backup.jar -c <config file> -v -i <inventory>\n"
             + "List files:\n"
             + "    java -jar glacier_backup.jar -l\n"
             + "Download files by glob (best effort):\n"
@@ -629,7 +666,7 @@ public class BackupMaster extends GlacierClient {
     
     public static void main(String[] args) throws AmazonServiceException, AmazonClientException {
         try {
-            ArgumentParser optParser = new ArgumentParser("{h|c:{u[i:]|l|d{g:|n:}|r{g:|n:}}}");
+            ArgumentParser optParser = new ArgumentParser("{h|c:{u[i:]|vi:|l|d{g:|n:}|r{g:|n:}}}");
             Map<String, String> opts = optParser.parseArguments(args);
             if (opts.containsKey("h")) {
                 System.out.println(usage());
@@ -645,6 +682,8 @@ public class BackupMaster extends GlacierClient {
                     bm.uploadIncremental(parameter);
                 else
                     bm.uploadUnfiltered();
+            } else if (opts.containsKey("v")) {
+                bm.verify(opts.get("i"));
             } else if (opts.containsKey("d")) {
                 String parameter = opts.get("g");
                 if (parameter != null) {
