@@ -483,16 +483,21 @@ public class BackupMaster extends GlacierClient {
                 new String(Files.readAllBytes(inventoryPath),
                     StandardCharsets.UTF_8));
         }
-        // Load file names and filter them through the inventory contents
-        Set<String> filter= existingArchives.stream().map(a -> a.getFileName()).collect(Collectors.toSet());
+        // Load file paths and filter them through the inventory contents
+        Set<Path> filter= existingArchives
+            .stream()
+            .map(a -> Paths.get(a.getFileName()).normalize())
+            .collect(Collectors.toSet());
         Set<String> files= new LinkedHashSet<>();
         try (Scanner sc= new Scanner(System.in)) {
             while (sc.hasNextLine()) {
-                String fileName= sc.nextLine();
-                if (filter.contains(fileName)) {
-                    log.info("Skipping existing in inventory \"" + fileName + "\"");
+                Path filePath= Paths.get(sc.nextLine()).normalize();
+                // NOTE! Path equality is tested without normalization!
+                // Tested on Linux
+                if (filter.contains(filePath)) {
+                    log.info("Skipping existing in inventory \"" + filePath + "\"");
                 } else {
-                    files.add(fileName);
+                    files.add(filePath.toString());
                 }
             }
         }
@@ -524,13 +529,13 @@ public class BackupMaster extends GlacierClient {
         Set<String> files= new LinkedHashSet<>();
         try (Scanner sc= new Scanner(System.in)) {
             while (sc.hasNextLine())
-                files.add(sc.nextLine());
+                files.add(Paths.get(sc.nextLine()).normalize().toString());
         }
         upload(files);
     }
     
     /**
-     * Upload files given by set of relative paths given as strings
+     * Upload files given by set of relative (to root_dir) paths given as strings
      * 
      * @param files - set of relative paths given as strings. NOTE! The set is modified here
      * @return the list of successfully uploaded files
@@ -604,8 +609,8 @@ public class BackupMaster extends GlacierClient {
             }
             log.severe(error.toString());
         }
-        log.info("WARNING: Amazon Glacier updates your inventory once per day.\n"
-                + "This means you won't see these uploads in the vault for up to a 24 hours");
+        log.warning("WARNING: Amazon Glacier updates your inventory once per day.\n"
+                  + "This means you won't see these uploads in the vault for up to a 24 hours");
         return uploaded;
     }
     
@@ -623,7 +628,7 @@ public class BackupMaster extends GlacierClient {
         {
             String fileName= testArchive.getFileName();
             try {
-                String actualChecksum = TreeHashGenerator.calculateTreeHash(new File(fileName));
+                String actualChecksum = TreeHashGenerator.calculateTreeHash(Paths.get(c_.root_dir, fileName).toFile());
                 if (actualChecksum.equals(testArchive.getTreeHash())) {
                     log.info("\"" + fileName + "\" is OK");
                 } else {
@@ -649,7 +654,7 @@ public class BackupMaster extends GlacierClient {
             + "-h   usage\n"
             + "-c   configuration file\n\n"
             + "Upload. If inventory is given, upload only what's not yet there, updating the inventory afterwards:\n"
-            + "    <file listing> | java -jar glacier_backup.jar -c <config file> -u [ -i <inventory> ]\n"
+            + "    <file listing relative to configured root_dir> | java -jar glacier_backup.jar -c <config file> -u [ -i <inventory> ]\n"
             + "Verify checksums of the files referenced by given inventory:\n"
             + "    java -jar glacier_backup.jar -c <config file> -v -i <inventory>\n"
             + "List files:\n"
