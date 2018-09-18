@@ -464,7 +464,7 @@ public class BackupMaster extends GlacierClient {
     {
         Set<Archive> existingArchives;
         // Load inventory and check the corresponding file is writable
-        Path inventoryPath= Paths.get(c_.root_dir, inventoryFileName);
+        Path inventoryPath= Paths.get(inventoryFileName);
         String inventoryError= "Unable to ensure I can update \"" + inventoryPath + "\" file";
         File inventoryFile= inventoryPath.toFile();
         if (!inventoryFile.isFile()) {
@@ -621,6 +621,7 @@ public class BackupMaster extends GlacierClient {
      * @throws IOException when file operations fail
      */
     public void verify(String inventory) throws IOException {
+        Set<Archive> failedArchives= new LinkedHashSet<>();
         for (Archive testArchive:
                 parseInventoryJSONToArchiveFileMap(
                     new String(Files.readAllBytes(Paths.get(inventory)),
@@ -632,6 +633,7 @@ public class BackupMaster extends GlacierClient {
                 if (actualChecksum.equals(testArchive.getTreeHash())) {
                     log.info("\"" + fileName + "\" is OK");
                 } else {
+                    failedArchives.add(testArchive);
                     log.severe(
                         "FAILED checksum test of \"" +
                         fileName +
@@ -643,6 +645,13 @@ public class BackupMaster extends GlacierClient {
             } catch (Exception e) {
                 log.log(Level.SEVERE, "FAILED calculating checksum of \"" + fileName + "\"", e);
             }
+        }
+        if (failedArchives.isEmpty()) {
+            log.info("The inventory \"" + inventory + "\" is healthy!");
+        } else {
+            log.severe("ERROR! The inventory \"" + inventory + "\" is corrupted.\n"
+                + "The following list of archives failed integrity check:\n"
+                + ArchivesToInventoryJSON(failedArchives));
         }
     }
 
