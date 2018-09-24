@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.function.Function;
 import java.util.logging.ConsoleHandler;
 import java.util.logging.FileHandler;
 import java.util.logging.Handler;
@@ -620,7 +621,7 @@ public class BackupMaster extends GlacierClient {
      * @param inventory - inventory file to verify
      * @throws IOException when file operations fail
      */
-    public void verify(String inventory) throws IOException {
+    public void verifyLocal(String inventory) throws IOException {
         Set<Archive> failedArchives= new LinkedHashSet<>();
         for (Archive testArchive:
                 parseInventoryJSONToArchiveFileMap(
@@ -654,33 +655,76 @@ public class BackupMaster extends GlacierClient {
                 + ArchivesToInventoryJSON(failedArchives));
         }
     }
+    
+    /**
+     * Verify status of the local inventory in Glacier
+     * 
+     * @param inventory - inventory file to verify
+     * @throws IOException when file operations fail
+     */
+    public void verifyRemote(String inventory) throws IOException {
+        
+        Set<Archive> failedArchives= new LinkedHashSet<>();
+        Set<Archive> localArchives= parseInventoryJSONToArchiveFileMap(
+            new String(Files.readAllBytes(Paths.get(inventory)),
+            StandardCharsets.UTF_8));
+        Set<Archive> glacierArchives= parseInventoryJSONToArchiveFileMap(getListing());
+        Map<String, List<Archive>> glacierNameToArchiveMap= glacierArchives
+            .stream()
+            .collect(Collectors.groupingBy(Archive::getFileName));
+        for (Archive testArchive: localArchives)
+        {
+            if (glacierArchives.contains(testArchive)) {
+                log.info("\"" + testArchive.getFileName() + "\" is OK");
+                continue;
+            }
+            failedArchives.add(testArchive);
+            StringBuilder error= new StringBuilder("Failed to find any match for archive:\n").append(testArchive);
+            List<Archive> matchingArchives= glacierNameToArchiveMap.get(testArchive.getFileName());
+            if (matchingArchives == null) {
+                error.append("\nGlacier does not have any candidate with the same file name");
+            } else {
+                for (Archive match: matchingArchives)
+                    error.append("\nGlacier candidate:\n").append(match);
+            }
+            log.severe(error.toString());
+        }
+        if (failedArchives.isEmpty()) {
+            log.info("The inventory \"" + inventory + "\" is healthy!");
+        } else {
+            log.severe("ERROR! The inventory \"" + inventory + "\" is corrupted.\n"
+                + "The following list of archives could not be found in Glacier:\n"
+                + ArchivesToInventoryJSON(failedArchives));
+        }
+    }
 
     private static String usage() {
         return
             "Usage:\n"
-            + "java -jar glacier_backup.jar {h|c:{u[i:]|vi:|l|d{g:|n:}|r{g:|n:}}}\n"
+            + "java -jar glacier_backup.jar {h|c:{u[i:]|vi:{l|r}|l|d{g:|i:}|r{g:|i:}}}\n"
             + "where:\n"
             + "-h   usage\n"
-            + "-c   configuration file\n\n"
+            + "-c   configuration file\n"
+            + "-i   file with Amazon Glacier inventory style JSON\n\n"
             + "Upload. If inventory is given, upload only what's not yet there, updating the inventory afterwards:\n"
             + "    <file listing relative to configured root_dir> | java -jar glacier_backup.jar -c <config file> -u [ -i <inventory> ]\n"
-            + "Verify checksums of the files referenced by given inventory:\n"
-            + "    java -jar glacier_backup.jar -c <config file> -v -i <inventory>\n"
-            + "List files:\n"
+            + "Verify given inventory against local files (-l) or Glacier (-r):\n"
+            + "    java -jar glacier_backup.jar -c <config file> -v -i <inventory> {-l|-r} \n"
+            + "List files (get current inventory):\n"
             + "    java -jar glacier_backup.jar -l\n"
             + "Download files by glob (best effort):\n"
             + "    java -jar glacier_backup.jar -c <config file> -d -g <Java style file glob>\n"
             + "Download files by inventory (best effort):\n"
-            + "    java -jar glacier_backup.jar -c <config file> -d -n <File with inventory style JSON>\n"
+            + "    java -jar glacier_backup.jar -c <config file> -d -i <inventory>\n"
             + "Remove files by glob:\n"
             + "    java -jar glacier_backup.jar -c <config file> -r -g <Java style file glob>\n"
             + "Remove files by inventory:\n"
-            + "    java -jar glacier_backup.jar -c <config file> -r -n <File with inventory style JSON>\n";
+            + "    java -jar glacier_backup.jar -c <config file> -r -i <inventory>\n";
     }
     
     public static void main(String[] args) throws AmazonServiceException, AmazonClientException {
         try {
-            ArgumentParser optParser = new ArgumentParser("{h|c:{u[i:]|vi:|l|d{g:|n:}|r{g:|n:}}}");
+            ArgumentParser optParser = new ArgumentParser("{h|c:{u[i:]|vi:{l|r}|l|d{g:|i:}|r{g:|i:}}}");
             Map<String, String> opts = optParser.parseArguments(args);
             if (opts.containsKey("h")) {
                 System.out.println(usage());
@@ -697,20 +741,24 @@ public class BackupMaster extends GlacierClient {
                 else
                     bm.uploadUnfiltered();
             } else if (opts.containsKey("v")) {
-                bm.verify(opts.get("i"));
+                String inventory= opts.get("i");
+                if (opts.containsKey("l"))
+                    bm.verifyLocal(inventory);
+                else if (opts.containsKey("r"))
+                    bm.verifyRemote(inventory);
             } else if (opts.containsKey("d")) {
                 String parameter = opts.get("g");
                 if (parameter != null) {
                     bm.downloadByGlob(parameter);
                 } else {
-                    bm.downloadByListing(Paths.get(opts.get("n")));
+                    bm.downloadByListing(Paths.get(opts.get("i")));
                 }
             } else if (opts.containsKey("r")) {
                 String parameter = opts.get("g");
                 if (parameter != null) {
                     bm.removeByGlob(parameter);
                 } else {
-                    bm.removeByListing(Paths.get(opts.get("n")));
+                    bm.removeByListing(Paths.get(opts.get("i")));
                 }
             } else if (opts.containsKey("l")) {
                 bm.list();

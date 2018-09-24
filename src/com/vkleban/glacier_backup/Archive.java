@@ -5,24 +5,24 @@ import com.google.gson.annotations.SerializedName;
 public class Archive {
     
     @SerializedName("ArchiveId")
-    private String archive_;
+    private String archiveID_;
     @SerializedName("ArchiveDescription")
-    private String file_;
+    private String fileName_;
     @SerializedName("SHA256TreeHash")
     private String treeHash_;
     
     public Archive(String archiveId, String fileName, String treeHash) {
-        archive_= archiveId;
-        file_= fileName;
+        archiveID_= archiveId;
+        fileName_= fileName;
         treeHash_= treeHash;
     }
 
     public String getArchiveId() {
-        return archive_;
+        return archiveID_;
     }
 
     public String getFileName() {
-        return file_;
+        return fileName_;
     }
     
     public String getTreeHash() {
@@ -31,7 +31,7 @@ public class Archive {
     
     @Override
     public int hashCode() {
-        return archive_.hashCode();
+        return archiveID_.hashCode();
     }
     
     @Override
@@ -39,7 +39,11 @@ public class Archive {
         if (!(another instanceof Archive))
             return false;
         Archive anotherArchive= (Archive) another;
-        return anotherArchive.archive_.equals(archive_) && anotherArchive.treeHash_.equals(treeHash_); 
+        return anotherArchive.archiveID_.equals(archiveID_) && anotherArchive.treeHash_.equals(treeHash_); 
     }
 
+    @Override
+    public String toString() {
+        return "File name \"" + fileName_ + "\", archive ID \"" + archiveID_ + "\", tree Hash \"" + treeHash_ + "\"";
+    }
 }
